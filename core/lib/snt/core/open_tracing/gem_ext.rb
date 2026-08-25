@@ -17,23 +17,29 @@ module OpenTracing
   end
 
   # Creates a new active span based on a parent span if provided. if child_of is nil, it will create a new span and trace
+  #
+  # CICO-135748: the restore and the scope.close must run even when the block raises. Previously
+  # they sat after a bare `yield`, so any exception escaping the block left the four MDC keys
+  # pointing at the finished span and never closed the scope -- leaking it into whatever ran next on
+  # that thread. Unhandled exceptions are exactly the case where the trace context matters most.
   def self.start_span_with_logging(span_name, child_of = nil)
     scope = ::OpenTracing.start_active_span(span_name, child_of: child_of)
     span = scope.span
     original_mdc_trace = ::Logging.mdc['trace']
     original_mdc_parent_span = ::Logging.mdc['parent_span']
     original_mdc_span = ::Logging.mdc['span']
-    original_mdc_span_name = ::Logging.mdc['span_name']
     ::Logging.mdc['trace'] = span.context.trace_context.trace_id
     ::Logging.mdc['parent_span'] = span.context.trace_context.parent_id
     ::Logging.mdc['span'] = span.context.trace_context.id
-    ::Logging.mdc['span_name'] = span_name
-    yield scope
-    ::Logging.mdc['trace'] = original_mdc_trace
-    ::Logging.mdc['parent_span'] = original_mdc_parent_span
-    ::Logging.mdc['span'] = original_mdc_span
-    ::Logging.mdc['span_name'] = original_mdc_span_name
-    scope.close
+
+    begin
+      yield scope
+    ensure
+      ::Logging.mdc['trace'] = original_mdc_trace
+      ::Logging.mdc['parent_span'] = original_mdc_parent_span
+      ::Logging.mdc['span'] = original_mdc_span
+      scope.close
+    end
   end
 
   # Gets the current active span in current scope and returns a trace object based on that
